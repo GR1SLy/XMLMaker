@@ -1,5 +1,5 @@
 from PyQt6 import QtWidgets, QtCore
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QPoint, Qt, QEvent, QObject
 from PyQt6.QtWidgets import QDialog, QTableWidget, QTableWidgetItem, QAbstractItemView, QMenu, QMessageBox, QLabel, \
     QTextEdit, QPushButton, QHBoxLayout, QVBoxLayout, QLineEdit
 import enum
@@ -11,6 +11,27 @@ class DBDialog(QDialog):
         DRIVERS = 1
         CARS = 2
 
+    class EnterFilter(QObject):
+        def __init__(self, table, callback):
+            super().__init__(table)
+            self._enter_pressed = False
+            self.table = table
+            self.callback = callback
+
+        def eventFilter(self, obj, event):
+            if obj is self.table and event.type() == QEvent.Type.KeyPress:
+                if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    if self._enter_pressed:
+                        try:
+                            self.callback()
+                        except Exception as e:
+                            print(e)
+                        self._enter_pressed = False
+                    else:
+                        self._enter_pressed = True
+                    return True  # событие поглощено
+            return super().eventFilter(obj, event)
+
     def __init__(self, db_agent, table_type, parent=None):
         super().__init__(parent)
         self.dbagent = db_agent
@@ -18,7 +39,11 @@ class DBDialog(QDialog):
         self.resize(640, 480)
 
         self.DBTable = QTableWidget(self)
-        self.DBTable.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        #self.DBTable.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+
+        self._enter_filter = self.EnterFilter(self.DBTable, self.__read_row)
+        self.DBTable.installEventFilter(self._enter_filter)
+
 
         self.DBTable.setContextMenuPolicy(
             QtCore.Qt.ContextMenuPolicy.CustomContextMenu
@@ -51,17 +76,24 @@ class DBDialog(QDialog):
                 )
         self.DBTable.resizeRowsToContents()
         self.DBTable.resizeColumnsToContents()
+        for row in range(self.DBTable.rowCount()):
+            for col in range(self.DBTable.columnCount()):
+                item = self.DBTable.item(row, col)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
 
     def __show_context_menu(self, pos):
         item = self.DBTable.itemAt(pos)
-        if item is None:          # клик вне ячеек
-            return
 
         menu = QMenu(self)
-        act_edit = menu.addAction("Изменить")
-        act_edit.triggered.connect(lambda: self.__change_cell(item))
-        act_delete = menu.addAction("Удалить строку")
-        act_delete.triggered.connect(lambda: self.__delete_row(item))
+        if item is not None:
+            act_edit = menu.addAction("Изменить")
+            act_edit.triggered.connect(lambda: self.__change_cell(item))
+            act_delete = menu.addAction("Удалить строку")
+            act_delete.triggered.connect(lambda: self.__delete_row(item))
+        else:
+            act_add = menu.addAction("Добавить")
+            act_add.triggered.connect(lambda: self.__add_row())
+
         menu.exec(self.DBTable.viewport().mapToGlobal(pos))
 
     def __change_cell(self, item):
@@ -99,6 +131,34 @@ class DBDialog(QDialog):
             self.dbagent.delete_row(model_class=self.table_type.value, item_id=int(id))
         self.__fill(table_type=self.table_type)
 
+    def __add_row(self):
+        row = self.DBTable.rowCount()
+        self.DBTable.insertRow(row)
+        for col in range(self.DBTable.columnCount()):
+            self.DBTable.setItem(row, col, QTableWidgetItem(""))
+        self.__make_row_editable(row)
+        self._added_row = row
+
+    def __make_row_editable(self, row):
+        item = self.DBTable.item(row, 0)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        for col in range (1, self.DBTable.columnCount()):
+            item = self.DBTable.item(row, col)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
+
+    def __make_row_read_only(self, row):
+        item = self.DBTable.item(row, 0)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        for col in range(1, self.DBTable.columnCount()):
+            item = self.DBTable.item(row, col)
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+
+    def __read_row(self):
+        data = []
+        for col in range(1, self.DBTable.columnCount()):
+            data.append(self.DBTable.item(self._added_row, col).text())
+        print(data)
+        self.__make_row_read_only(self._added_row)
 
 class InputDialog(QDialog):
     def __init__(self, title: str, label_text: str, initial_text: str = "", parent=None):
