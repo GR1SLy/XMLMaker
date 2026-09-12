@@ -1,6 +1,6 @@
 import sys
 from lib.dbagent import DBAgent
-
+import main_window_ui
 if __name__ == '__main__':
     agent = DBAgent(debug=True)
     agent.create()
