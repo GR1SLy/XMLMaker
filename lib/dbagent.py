@@ -1,9 +1,10 @@
 import enum
 from lib2to3.pgen2.driver import Driver
 
+from Tools.scripts.generate_opcode_h import header
 from sqlalchemy import create_engine, select, ForeignKey, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
-from datetime import date
+from datetime import date, datetime
 import sys
 from pathlib import Path
 from sqlalchemy import create_engine
@@ -52,7 +53,7 @@ class DBAgent:
         phone_number: Mapped[str] = mapped_column()
         employer_id: Mapped[int] = mapped_column(ForeignKey('employers.id'))
         employer: Mapped["Employer"] = relationship(back_populates="drivers")
-        license: Mapped["License"] = relationship(back_populates="driver")
+        license: Mapped["License"] = relationship(back_populates="driver", cascade="all, delete-orphan")
 
     class License(Base):
         __tablename__ = 'licenses'
@@ -202,31 +203,125 @@ class DBAgent:
         return [column.key for column in inspector.columns]
 
     def get_drivers_for_table(self) -> tuple[list[str], list[tuple]]:
-        headers = ["ФИО", "Телефон", "ВУ Серия/Номер", "ВУ Дата", "Наниматель"]
+        headers = ["ID", "Фамилия", "Имя", "Отчество", "Телефон", "ВУ Серия", "ВУ Номер", "ВУ Дата", "Наниматель"]
         table_data = []
         with Session(self.engine) as session:
             drivers = session.scalars(select(self.Driver)).all()
             for d in drivers:
-                fio = f'{d.last_name} {d.first_name} {d.patronymic}'
                 if d.license:
-                    vu_info = f'{d.license.series} {d.license.number}'
+                    vu_series = d.license.series
+                    vu_number = d.license.number
                     vu_date = d.license.issue_date.strftime("%d.%m.%Y")
                 else:
-                    vu_info = "Нет данных"
+                    vu_series = "Нет данных"
+                    vu_number = "Нет данных"
                     vu_date = "-"
                 employer = d.employer.last_name if d.employer else "Нет данных"
 
-                row = (fio, d.phone_number, vu_info, vu_date, employer)
+                row = (d.id, d.last_name, d.first_name, d.patronymic, d.phone_number, vu_series, vu_number, vu_date, employer)
                 table_data.append(row)
         return headers, table_data
 
     def get_cars_for_table(self) -> tuple[list[str], list[tuple]]:
-        headers = ["Гос. номер", "Марка", "Тип", "Грузоподъемность", "Вместимость", "Тип владения", "Владелец"]
+        headers = ["ID", "Гос. номер", "Марка", "Тип", "Грузоподъемность", "Вместимость", "Тип владения", "Владелец"]
         table_data = []
         with Session(self.engine) as session:
             cars = session.scalars(select(self.Car)).all()
             for c in cars:
                 owner = c.owner.last_name if c.owner else "Нет данных"
-                row = (c.number, c.brand, c.car_type.value, c.load_capacity, c.volume, c.ownership_type.name, owner)
+                row = (c.id, c.number, c.brand, c.car_type.value, c.load_capacity, c.volume, c.ownership_type.name, owner)
                 table_data.append(row)
         return headers, table_data
+
+    def __find_col(self, col_name: str, model_class: int):
+        match model_class:
+            case 1:
+                headers = ["ID", "Фамилия", "Имя", "Отчество", "Телефон", "ВУ Серия", "ВУ Номер", "ВУ Дата", "Наниматель"]
+                match headers.index(col_name):
+                    case 1: return "last_name", 1
+                    case 2: return "first_name", 1
+                    case 3: return "patronymic", 1
+                    case 4: return "phone_number", 1
+                    case 5: return "series", 3
+                    case 6: return "number", 3
+                    case 7: return "issue_date", 3
+                    case 8: return "employer", 4
+            case 2:
+                headers = ["ID", "Гос. номер", "Марка", "Тип", "Грузоподъемность", "Вместимость", "Тип владения", "Владелец"]
+                match headers.index(col_name):
+                    case 1: return "number", 2
+                    case 2: return "brand", 2
+                    case 3: return "car_type", 2
+                    case 4: return "load_capacity", 2
+                    case 5: return "volume", 2
+                    case 6: return "ownership_type", 2
+                    case 7: return "owner", 4
+        return "", 0
+
+    def update_cell(self, model_class: int, item_id: int, col_name: str, new_value):
+        column_name, model_num = self.__find_col(col_name, model_class)
+        model = None
+        match model_num:
+            case 1: model = self.Driver
+            case 2: model = self.Car
+            case 3: model = self.License
+            case 4: model = self.Employer
+        with Session(self.engine) as session:
+            # 1. Находим нужный объект в базе по его ID
+            # session.get() - это самый быстрый способ поиска по primary_key
+            obj = session.get(model, item_id)
+
+            if not obj:
+                print(f"Ошибка: Запись с ID {item_id} не найдена в таблице {model.__tablename__}")
+                return
+
+            if column_name in ["issue_date"]:
+                try:
+                    # Пытаемся превратить строку "дд.мм.гггг" в объект date
+                    new_value = datetime.strptime(new_value, "%d.%m.%Y").date()
+                except ValueError:
+                    # Если пользователь ввел дичь (например "32.13.2023" или буквы)
+                    print(f"Ошибка: Неверный формат даты ({new_value}). Ожидается ДД.ММ.ГГГГ")
+                    return
+
+                # --- ОБРАБОТЧИК ДЛЯ ЧИСЕЛ (ФЛОАТОВ) ---
+                # Если у вас есть колонки с грузоподъемностью и объемом, из GUI они тоже придут как текст
+            elif column_name in ["load_capacity", "volume"]:
+                try:
+                    # Меняем запятую на точку (если юзер ввел "1,5" вместо "1.5")
+                    new_value = float(new_value.replace(",", "."))
+                except ValueError:
+                    print(f"Ошибка: Ожидается число, а получено '{new_value}'")
+                    return
+
+            # 2. Устанавливаем новое значение динамически
+            # Это равносильно написанию obj.phone_number = "8999..."
+            setattr(obj, column_name, new_value)
+
+            # 3. Сохраняем изменения
+            session.commit()
+            print(f"Успешно обновлено: {column_name} = {new_value}")
+
+    def delete_row(self, model_class: int, item_id: int):
+        model = None
+        match model_class:
+            case 1:
+                model = self.Driver
+            case 2:
+                model = self.Car
+            case 3:
+                model = self.License
+            case 4:
+                model = self.Employer
+        with Session(self.engine) as session:
+            obj = session.get(model, item_id)
+
+            if not obj:
+                print(f"Ошибка: Запись с ID {item_id} не найдена в {model.__tablename__}.")
+                return
+
+            session.delete(obj)
+
+            session.commit()
+            print(f"Запись (и связанные данные) успешно удалена: ID {item_id}")
+            return

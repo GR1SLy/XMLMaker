@@ -233,7 +233,7 @@ class Ui_MainWindow(object):
     def search_car(self):
         target_car = self.carTextEdit.text()
         self.car = self.dbagent.get_car_info_by_number(target_car)
-        if (self.car):
+        if self.car:
             self.carTextEdit.setText(f'{self.car["number"]} {self.car["brand"]}')
         else:
             self.carTextEdit.setText("Не найдено")
