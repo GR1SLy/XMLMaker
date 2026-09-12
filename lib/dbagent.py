@@ -1,5 +1,7 @@
 import enum
-from sqlalchemy import create_engine, select, ForeignKey
+from lib2to3.pgen2.driver import Driver
+
+from sqlalchemy import create_engine, select, ForeignKey, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session, relationship
 from datetime import date
 import sys
@@ -18,6 +20,9 @@ class CarType(enum.Enum):
     CARGO = "Грузовой автомобиль"
     PASSENGER = "Легковой автомобиль"
     SPECIAL_CARGO = "Специальный грузовой автомобиль"
+    TRUCK = "Седельный тягач"
+    TRAILER = "Грузовой прицеп"
+    SEMI_TRAILER = "Грузовой полуприцеп"
 
 class DBAgent:
     def __init__(self, debug=False):
@@ -157,18 +162,6 @@ class DBAgent:
             # 3. Безопасно достаем нанимателя
             employer = driver.employer.last_name if driver.employer else "Без нанимателя"
 
-            # 4. Выводим результат в виде красивой карточки (или можно вернуть словарем/списком)
-            # print("-" * 40)
-            # print(f"ИНФОРМАЦИЯ ПО ВОДИТЕЛЮ: {target_last_name}")
-            # print("-" * 40)
-            # print(f"ФИО:         {fio}")
-            # print(f"Телефон:     {driver.phone_number}")
-            # print(f"ВУ серия:    {vu_series}")
-            # print(f"ВУ номер:    {vu_number}")
-            # print(f"ВУ дата:     {vu_date}")
-            # print(f"Номер ТС:    [Нет в БД]")  # Заглушка, так как таблицы Vehicle пока нет
-            # print(f"Наниматель:  {employer}")
-            # print("-" * 40, "\n")
             return {
                 "last_name": driver.last_name,
                 "first_name": driver.first_name,
@@ -198,3 +191,42 @@ class DBAgent:
                 "ownership_type": car.ownership_type,
                 "owner": car.owner.last_name
             }
+
+    def get_columns_from_table(self, table: str):
+        inspector = None
+        match table:
+            case "drivers":
+                inspector = inspect(self.Driver)
+            case "cars":
+                inspector = inspect(self.Car)
+        return [column.key for column in inspector.columns]
+
+    def get_drivers_for_table(self) -> tuple[list[str], list[tuple]]:
+        headers = ["ФИО", "Телефон", "ВУ Серия/Номер", "ВУ Дата", "Наниматель"]
+        table_data = []
+        with Session(self.engine) as session:
+            drivers = session.scalars(select(self.Driver)).all()
+            for d in drivers:
+                fio = f'{d.last_name} {d.first_name} {d.patronymic}'
+                if d.license:
+                    vu_info = f'{d.license.series} {d.license.number}'
+                    vu_date = d.license.issue_date.strftime("%d.%m.%Y")
+                else:
+                    vu_info = "Нет данных"
+                    vu_date = "-"
+                employer = d.employer.last_name if d.employer else "Нет данных"
+
+                row = (fio, d.phone_number, vu_info, vu_date, employer)
+                table_data.append(row)
+        return headers, table_data
+
+    def get_cars_for_table(self) -> tuple[list[str], list[tuple]]:
+        headers = ["Гос. номер", "Марка", "Тип", "Грузоподъемность", "Вместимость", "Тип владения", "Владелец"]
+        table_data = []
+        with Session(self.engine) as session:
+            cars = session.scalars(select(self.Car)).all()
+            for c in cars:
+                owner = c.owner.last_name if c.owner else "Нет данных"
+                row = (c.number, c.brand, c.car_type.value, c.load_capacity, c.volume, c.ownership_type.name, owner)
+                table_data.append(row)
+        return headers, table_data
